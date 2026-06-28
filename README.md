@@ -1,351 +1,230 @@
-# 🌊 Tornado MCP: AI-Powered Seismic Navigation System
+# SeisPilot
 
-> **The Future of Geophysical Data Interaction**: A production-ready agentic AI system that transforms natural language into precise seismic navigation commands on a 3D visualisation software, showcasing advanced LLM integration, coordinate transformation, and enterprise-grade system design.
+**Natural-language control for the Tornado 3D seismic visualization software.**
 
-## 🚀 **Why This Matters for the AI-First World**
+SeisPilot lets you drive seismic navigation in plain English. You type a command
+like *"go to the gas area and make it brighter with rainbow colors"*, an LLM
+translates it into precise navigation parameters (crossline / inline / depth,
+gain, colormap, etc.), and those commands are executed inside Tornado.
 
-This project demonstrates **cutting-edge agentic AI capabilities** that are reshaping how domain experts interact with complex software systems:
+```
+"Go to the gas area"  →  crossline 25431, inline 7878, depth 2231
+```
 
-### **🎯 Agentic AI Innovation**
-- **Natural Language → Domain Actions**: "Go to the gas area" automatically translates to `crossline 25431, inline 7878, depth 2231`
-- **Multi-LLM Orchestration**: HTTP LLM primary with Gemini fallback, showcasing robust AI infrastructure
-- **Context-Aware Intelligence**: Domain-specific geological knowledge dynamically loaded from configuration
-- **Function Calling Mastery**: Seamless JSON-RPC command generation with parameter validation
-
-## 🏗️ System Architecture
-
-![Simplified Architecture](Simplified%20Architecture.png)
-
-### **🏗️ Enterprise Systems Design**
-- **Microservices Architecture**: Clean separation between NLP processing, coordinate transformation, and visualization control
-- **Real-Time State Management**: SQLite-based command queuing with status tracking and error recovery
-- **Configuration-Driven**: Linear coordinate mappings, transformation limits, and domain context via JSON
-- **Production-Ready**: Comprehensive error handling, logging, fallback mechanisms, and graceful degradation
-
-### **💡 Technical Excellence**
-- **Coordinate Transformation Engine**: Bidirectional linear mapping between seismic coordinates and Cartesian space
-- **Template System**: Dynamic HTML bookmark generation with parameter interpolation
-- **Undo/Redo Architecture**: Complete state history management with 20-level deep undo stack
-- **Multi-Provider LLM**: Transparent failover between HTTP endpoints and cloud APIs
+Instead of manually entering `X=159738, Y=75000, Z=1750`, adjusting gain, and
+selecting a colormap by index, you describe the result you want.
 
 ---
 
-## **🎬 What It Does**
+## How it works
 
-Transform complex seismic navigation from this:
+SeisPilot is split into two processes that communicate **only** through a shared
+SQLite database (a constraint imposed by the Tornado runtime's network/security
+sandbox):
+
 ```
-❌ Traditional: "Set X=159738, Y=75000, Z=1750, adjust gain to 2.5, change colormap to index 7"
-```
-
-To this:
-```
-✅ Natural: "Go to the gas area and make it brighter with rainbow colors"
-```
-
-The system automatically:
-1. **Understands** geological terminology via domain context
-2. **Translates** to precise coordinates using linear transformations  
-3. **Executes** multiple commands with proper sequencing
-4. **Provides** intelligent feedback with undo/redo capability
-
----
-
-## **🔥 Key Innovations**
-
-### **1. Intelligent Coordinate Transformation**
-```python
-# Configure once in config.json
-"crossline_to_x": {
-  "point1": {"crossline": 25519, "x": 159488},
-  "point2": {"crossline": 25599, "x": 159988}
-}
-
-# Use everywhere with natural language
-"Move to crossline 25559" → X=159738 (automatic integer conversion)
-```
-
-### **2. Domain Context Intelligence**
-```json
-{
-  "domain_context": "When user asks to go to area with a lot of gas, move to crossline 25431, depth 2231, inline 7878..."
-}
-```
-
-### **3. Multi-LLM Resilience**
-```
-HTTP LLM (Primary) → Gemini API (Fallback) → Graceful Error Handling
-```
-
-### **4. Real-Time Command Processing**
-```
-Natural Language → JSON-RPC → SQLite Queue → Tornado Execution → State Feedback
-```
-
----
-
-## **🏗️ System Architecture**
-
-### **Microservices Design Pattern**
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   NLP End       │    │   Shared Utils   │    │  Tornado End    │
-│  (Windows)      │    │                  │    │   (Linux)       │
-├─────────────────┤    ├──────────────────┤    ├─────────────────┤
-│ • Gemini Parser │    │ • Config Loader  │    │ • Bookmark Eng. │
-│ • HTTP LLM      │◄──►│ • Coord Mapper   │◄──►│ • Seismic Nav.  │
-│ • Chat Terminal │    │ • Context Loader │    │ • State Manager │
-│ • Command Queue │    │ • Limits Loader  │    │ • Command Proc. │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-         │                       │                       │
-         └───────────────────────┼───────────────────────┘
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│   NLP end       │     │   Shared utils   │     │  Tornado end    │
+│  (Windows)      │     │                  │     │   (Linux)       │
+├─────────────────┤     ├──────────────────┤     ├─────────────────┤
+│ • Chat terminal │     │ • Config loader  │     │ • Bookmark eng. │
+│ • LLM parser    │◄───►│ • Coord mapper   │◄───►│ • Seismic nav.  │
+│ • Command queue │     │ • Context loader │     │ • State manager │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+         │                       │                        │
+         └───────────────────────┼────────────────────────┘
                                  │
-                    ┌──────────────────┐
-                    │   SQLite DB      │
-                    │ • Command Queue  │
-                    │ • State Storage  │
-                    │ • Status Tracking│
-                    └──────────────────┘
+                       ┌──────────────────┐
+                       │   SQLite DB      │
+                       │ • Command queue  │
+                       │ • State / status │
+                       └──────────────────┘
 ```
 
-### **📁 Project Structure**
+1. **NLP end** (Windows) — interactive chat terminal. Sends your text to an LLM,
+   which returns JSON-RPC commands. These are written to the SQLite command queue.
+2. **Tornado end** (Linux, run inside Tornado) — polls the queue, generates/edits
+   the active bookmark, and updates Tornado's view. Writes status back to the DB.
+3. **Shared utils** — coordinate mapping, config/context loading, and the JSON-RPC
+   protocol used in both directions.
+
+![Architecture](Simplified%20Architecture.png)
+
+---
+
+## Key components
+
+- **Coordinate mapping** — bidirectional linear transform between seismic
+  coordinates (crossline/inline/depth) and Tornado's Cartesian space (X/Y/Z),
+  configured with two reference points per axis in `config.json`.
+- **Domain context** — geological shortcuts ("gas area", "fault zone",
+  "reservoir", …) mapped to coordinates in `context.json` and injected into the
+  LLM prompt.
+- **Multi-provider LLM** — an HTTP endpoint (e.g. a self-hosted Llama model) as
+  the primary provider, with the Gemini API as a fallback. See
+  `src/shared/llm/llm_provider.py`.
+- **Bookmark engine** — Tornado is driven by editing a single bookmark XML
+  (`data/bookmarks/TEMP_BKM.html`) built from templates in `data/templates/`.
+- **State management** — SQLite-backed command queue with status tracking and a
+  20-level undo/redo history.
+
+---
+
+## Project structure
+
 ```
-tornado-mcp/
-├── 🔧 config.json              # Coordinate mappings & paths
-├── 🧠 context.json             # Domain knowledge base
-├── ⚙️ .env                     # LLM provider configuration
-├── 📋 INSTRUCTIONS.md          # Quick start guide
+.
+├── config.json              # Coordinate mappings & data paths
+├── context.json             # Domain knowledge for the LLM
+├── .env                     # LLM provider configuration (not committed)
+├── INSTRUCTIONS.md          # Detailed setup notes
 │
-├── 📁 src/
-│   ├── 📁 nlp_end/            # Natural Language Processing
-│   │   ├── 📁 nlp/            # • Gemini command parser
-│   │   └── 📁 terminal/       # • Interactive chat terminal
+├── src/
+│   ├── nlp_end/             # Natural-language end (Windows)
+│   │   ├── nlp/             #   LLM command parser & validator
+│   │   ├── terminal/        #   Interactive chat terminal
+│   │   └── gui/             #   Optional Tkinter GUIs
 │   │
-│   ├── 📁 tornado_end/        # Tornado Integration
-│   │   ├── 📁 core/           # • Bookmark engine v2
-│   │   │                      # • Seismic navigation
-│   │   │                      # • Coordinate transformation
-│   │   └── tornado_listener.py # • Command processor
+│   ├── tornado_end/         # Tornado end (Linux)
+│   │   ├── core/            #   Bookmark engine, seismic navigation
+│   │   └── tornado_listener.py
 │   │
-│   └── 📁 shared/             # Shared Components
-│       ├── 📁 database/       # • SQLite management
-│       ├── 📁 llm/            # • Multi-LLM provider
-│       ├── 📁 protocols/      # • JSON-RPC protocols
-│       └── 📁 utils/          # • Config & context loaders
+│   └── shared/              # Shared between both ends
+│       ├── database/        #   SQLite management
+│       ├── llm/             #   LLM providers (HTTP + Gemini)
+│       ├── protocols/       #   JSON-RPC 2.0 protocol
+│       └── utils/           #   Config, context, coordinate mapper
 │
-├── 📁 data/                   # Templates & Bookmarks
-│   ├── 📁 bookmarks/         # • Generated bookmarks
-│   └── 📁 templates/         # • HTML templates
+├── data/
+│   ├── bookmarks/           # Active bookmark loaded into Tornado
+│   ├── templates/           # Bookmark view templates
+│   └── captures/            # Screenshots produced during view changes
 │
-└── 📁 database/              # SQLite Database Files
-    └── tornado_mcp.db        # • Command queue & state
+└── database/                # SQLite database files
 ```
 
 ---
 
-## **⚡ Quick Start**
+## Setup
 
-> **Detailed setup instructions available in [INSTRUCTIONS.md](INSTRUCTIONS.md)**
+> Full notes are in [INSTRUCTIONS.md](INSTRUCTIONS.md).
 
-### **1. Natural Language Navigation**
+The two ends run on different machines and Python versions, so dependencies are
+installed into separate virtual environments that are **imported from directly,
+not activated** (a workaround for the Tornado sandbox):
+
+- `.win-venv` — Windows, Python 3.13, packages from `win-requirements.txt`
+- `.linux-venv` — Linux, Python 3.6.8 (to match Tornado), packages from
+  `linux-requirements.txt`
+
+Both ends must point at the **same** directory (e.g. a network share), since they
+communicate only through the shared SQLite database.
+
+### 1. Configure the LLM
+
+```env
+# .env  (see ".env(example only)")
+DEFAULT_LLM_PROVIDER=http_llm
+HTTP_LLM_SERVER_URL=http://your-llm-endpoint/v1/chat/completions
+FALLBACK_LLM_PROVIDERS=gemini
+GEMINI_API_KEY=your_gemini_api_key
+```
+
+### 2. Configure coordinate mappings
+
+Edit `config.json` with two reference points per axis from your survey:
+
+```json
+"crossline_to_x": {
+  "point1": { "crossline": 25519, "x": 159488 },
+  "point2": { "crossline": 25599, "x": 159988 }
+}
+```
+
+### 3. Add domain context
+
+Edit `context.json` to map natural-language locations to coordinates:
+
+```json
+{ "domain_context": "When the user asks to go to the gas area, move to crossline 25431, inline 7878, depth 2231. ..." }
+```
+
+### 4. Add templates
+
+Place bookmark templates in `data/templates/` (at minimum `default_bookmark.html`).
+Each saved XML must contain exactly **one** bookmark.
+
+---
+
+## Usage
+
+Start the Tornado listener from the project root inside an XTerm (Linux):
+
 ```bash
-# Start the AI assistant
-python src/nlp_end/main.py
+tornadoi -script src/tornado_end/tornado_listener.py
+```
 
-# Natural language commands:
-🎯 seismic> go to the gas area
+Start the chat terminal on the Windows machine:
+
+```bash
+python src/nlp_end/main.py
+```
+
+Then talk to it:
+
+```
+seismic> go to the gas area
 ✅ Moving to crossline 25431, inline 7878, depth 2231
 
-🎯 seismic> make it brighter and use rainbow colors  
-✅ Increasing gain by 4dB and changing to rainbow colormap
+seismic> make it brighter and use rainbow colors
+✅ Increasing gain and changing to rainbow colormap
 
-🎯 seismic> undo that
-✅ Undoing last action - reverted to previous state
+seismic> undo that
+✅ Reverted to previous state
 ```
 
-### **2. Coordinate Transformation**
+### Coordinate mapper (standalone)
+
 ```python
 from shared.utils.coordinate_mapper import get_coordinate_mapper
 
 mapper = get_coordinate_mapper()
 
-# Seismic → Cartesian
 x, y, z = mapper.seismic_to_cartesian(crossline=25559, inline=5000, depth=1750)
-# Result: X=159738, Y=62488, Z=1750 (all integers)
-
-# Cartesian → Seismic  
-crossline, inline, depth = mapper.cartesian_to_seismic(x=159738, y=62488, z=1750)
-# Result: crossline=25559, inline=5000, depth=1750
-```
-
-### **3. Domain Context Configuration**
-```json
-// context.json
-{
-  "domain_context": "When user asks to go to area with a lot of gas, move to crossline 25431, depth 2231, inline 7878. When user asks to go to the fault zone, move to crossline 25550, inline 5000, depth 3000..."
-}
-```
-
-### **4. Multi-LLM Configuration**
-```env
-# .env
-DEFAULT_LLM_PROVIDER=http_llm
-HTTP_LLM_SERVER_URL=your-http-llm
-FALLBACK_LLM_PROVIDERS=gemini
-GEMINI_API_KEY=your_gemini_api_key
+crossline, inline, depth = mapper.cartesian_to_seismic(x=x, y=y, z=z)
 ```
 
 ---
 
-## **🎯 Core Features**
+## Coordinate transform
 
-### **Natural Language Understanding**
-- **Geological Terminology**: Understands "gas area", "fault zone", "reservoir", "salt dome"
-- **Spatial Commands**: "move left", "go deeper", "zoom in", "rotate right"
-- **Display Controls**: "make it brighter", "use rainbow colors", "increase contrast"
-- **Navigation**: "go to crossline 25559", "move to inline 5000", "depth 1750"
+Each axis uses a two-point linear mapping `cartesian = slope · seismic + intercept`:
 
-### **Intelligent Coordinate System**
-- **Seismic ↔ Cartesian**: Bidirectional linear transformation with integer precision
-- **Configurable Mappings**: Two-point linear interpolation via config.json
-- **Domain-Aware**: Crossline/Inline/Depth instead of X/Y/Z terminology
-- **Validation**: Range checking and type enforcement
+```
+slope     = (x2 - x1) / (crossline2 - crossline1)
+intercept = x1 - slope · crossline1
 
-### **Multi-LLM Infrastructure**
-- **Primary Provider**: HTTP LLM for fast, local processing
-- **Fallback Provider**: Gemini API for reliability
-- **Function Calling**: JSON-RPC command generation
-- **Error Recovery**: Graceful degradation and retry logic
-
-### **State Management**
-- **Command Queue**: SQLite-based asynchronous processing
-- **History Tracking**: 20-level undo/redo with state snapshots
-- **Real-Time Sync**: Live state updates between components
-- **Status Monitoring**: Command execution tracking and error reporting
-
----
-
-## **🛠️ Technical Implementation**
-
-### **Coordinate Transformation Mathematics**
-```python
-# Linear transformation: cartesian = slope * seismic + intercept
-slope = (x2 - x1) / (crossline2 - crossline1)
-intercept = x1 - (slope * crossline1)
-
-# Example with actual values:
-# crossline 25519 → X 159488, crossline 25599 → X 159988
+# e.g. crossline 25519 → X 159488, crossline 25599 → X 159988
 # slope = (159988 - 159488) / (25599 - 25519) = 6.25
-# X = 6.25 * crossline + (-0.125)
 ```
 
-### **LLM Provider Architecture**
-```python
-class LLMFactory:
-    def get_available_provider(self):
-        # Try default provider (HTTP LLM)
-        if default.is_available():
-            return default
-        
-        # Fallback to Gemini
-        for provider in fallback_providers:
-            if provider.is_available():
-                return provider
-        
-        return None  # Graceful degradation
-```
-
-### **Command Processing Pipeline**
-```
-1. Natural Language Input
-2. LLM Function Calling (JSON-RPC)
-3. Parameter Validation & Transformation
-4. SQLite Command Queue
-5. Tornado Execution
-6. State Update & Feedback
-```
+Results are rounded to integers to match Tornado's coordinate space.
 
 ---
 
-## **🚀 Getting Started**
+## Prerequisites
 
-### **Prerequisites**
-- Python 3.6+ (Linux) / Python 3.8+ (Windows)
+- Python 3.6+ on the Tornado/Linux end, Python 3.8+ on the Windows/NLP end
 - SQLite3
-- Access to HTTP LLM endpoint OR Gemini API key
-- Tornado software (for production use)
-
-### **Installation**
-```bash
-# Clone repository
-cd tornado-mcp
-
-# Install dependencies
-pip install -r win-requirements.txt and linux-requirements into .win-venv and .linux-venv
-but during usage, DO NOT activate environments (this is some 'hacking' over security)
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your LLM provider settings
-
-# Configure coordinate mappings
-# Edit config.json with your seismic survey coordinates
-
-# Add domain knowledge
-# Edit context.json with geological feature locations
-```
-
-### **Usage**
-```bash
-# Start NLP terminal (Windows)
-python src/nlp_end/main.py
-
-# Start Tornado listener (Linux, inside Tornado)
-python src/tornado_end/tornado_listener.py
-```
-
-
-## **🔒 Security & Reliability**
-
-### **Security Measures**
-- **Input Validation**: Parameter range checking and type enforcement
-- **SQL Injection Prevention**: Parameterized queries throughout
-- **API Key Management**: Environment-based configuration
-- **Error Sanitization**: Safe error messages without sensitive data
-
-### **Reliability Features**
-- **Graceful Degradation**: System continues with reduced functionality
-- **Automatic Retry**: Configurable retry logic for failed operations
-- **State Recovery**: Persistent state storage and recovery
-- **Comprehensive Logging**: Detailed logging for debugging and monitoring
-
-
-## **📈 Business Value**
-
-### **For Geophysicists**
-- **10x Faster Navigation**: Natural language vs. manual coordinate entry
-- **Reduced Errors**: Automated coordinate transformation eliminates mistakes
-- **Domain Expertise**: System understands geological terminology
-- **Intuitive Interface**: No need to learn complex software commands
-
-### **For Organizations**
-- **Productivity Gains**: Faster seismic interpretation workflows
-- **Training Reduction**: Minimal learning curve for new users
-- **Standardization**: Consistent navigation patterns across teams
-- **Integration Ready**: API-first design for enterprise integration
+- An HTTP LLM endpoint and/or a Gemini API key
+- Tornado seismic visualization software (for the Tornado end)
 
 ---
 
-## **🎓 Learning Outcomes**
+## Notes & limitations
 
-This project demonstrates mastery of:
-
-- **Agentic AI Systems**: Multi-LLM orchestration with intelligent fallbacks
-- **Domain-Specific AI**: Context-aware natural language processing
-- **Microservices Architecture**: Distributed system design and communication
-- **Real-Time Systems**: Asynchronous processing and state management
-- **Mathematical Modeling**: Linear transformations and coordinate systems
-- **Enterprise Software**: Production-ready error handling and monitoring
-- **API Design**: RESTful and JSON-RPC protocol implementation
-- **Database Design**: Efficient queuing and state storage patterns
-
----
+- The two ends share a directory rather than copies; both read/write the same
+  SQLite database.
+- View changes currently require capturing an image (saved to `data/captures/`),
+  a side effect of how the Tornado API is driven.
+- `.env`, the virtual environments, and the SQLite DB are git-ignored.
